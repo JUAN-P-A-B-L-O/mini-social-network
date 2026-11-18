@@ -1,6 +1,6 @@
 # Inter Social Lab
 
-Laboratório incremental de uma rede social baseada em microsserviços. Esta etapa entrega somente a fundação: inicialização, persistência isolada, migrações e health checks. Não há APIs de negócio, autenticação, comunicação entre serviços ou integração AWS.
+Laboratório incremental de uma rede social baseada em microsserviços. O Lab 01.2 adiciona publicações de texto e feed paginado à fundação existente. Não há autenticação, comunicação entre serviços ou integração AWS.
 
 ## Stack e decisões
 
@@ -33,7 +33,7 @@ Os serviços usam projetos Gradle independentes, sem build agregador ou bibliote
 └── README.md
 ```
 
-`post-service` será responsável por posts e possui `posts_db`/`posts_user`. `media-service` será responsável por mídia e possui `media_db`/`media_user`. Nesta etapa ambos expõem somente os endpoints operacionais nativos. Cada banco possui seu próprio histórico Flyway; V1 estabelece esse histórico sem criar tabelas de negócio.
+`post-service` é responsável por posts e possui `posts_db`/`posts_user`. `media-service` será responsável por mídia e possui `media_db`/`media_user`. O post-service também expõe as APIs de posts e feed descritas abaixo. Cada banco possui seu próprio histórico Flyway; V1 estabelece esse histórico sem criar tabelas de negócio.
 
 ## Pré-requisitos e configuração
 
@@ -113,7 +113,7 @@ cd ../media-service
 ./gradlew installDist
 ```
 
-Cada suíte inicia a aplicação isoladamente e verifica conexão com o banco correto, execução de V1 e HTTP 200 em `/health`. Relatórios ficam em `build/reports/tests/test/index.html` de cada serviço. Os Dockerfiles compilam a distribuição; os testes com Testcontainers são executados separadamente, pois exigem acesso ao Docker e não fazem parte do build de imagem.
+As suítes verificam inicialização, PostgreSQL, migrações e saúde. O post-service também testa criação e persistência, consulta, validação, 404, paginação, ordenação com desempate e exclusão de posts não publicados. Relatórios ficam em `build/reports/tests/test/index.html` de cada serviço. Os Dockerfiles compilam a distribuição; os testes com Testcontainers são executados separadamente, pois exigem acesso ao Docker e não fazem parte do build de imagem.
 
 ## Frontend
 
@@ -127,10 +127,43 @@ npm run dev
 npm run build
 ```
 
-Vite informa a URL de desenvolvimento no terminal. Não há telas ou requisições nesta etapa. `src/config/api.ts` reserva bases configuráveis por `VITE_POST_API_BASE_URL` e `VITE_MEDIA_API_BASE_URL`; os caminhos padrão `/api/posts` e `/api/media` ainda não possuem roteamento. Proxy/CORS serão definidos quando houver integração real. Variáveis `VITE_*` são públicas e nunca devem conter secrets.
+Vite informa a URL de desenvolvimento no terminal. Não há telas ou requisições nesta etapa. `src/config/api.ts` reserva bases configuráveis por `VITE_POST_API_BASE_URL` e `VITE_MEDIA_API_BASE_URL`; os caminhos padrão `/api/posts` e `/api/media` ainda não possuem roteamento no frontend. Proxy/CORS serão definidos quando houver integração real. Variáveis `VITE_*` são públicas e nunca devem conter secrets.
 
 ## Validação desta fundação
 
 Foram executados os builds independentes e os testes JUnit/Testcontainers dos dois serviços, além do build frontend em Node 22. O ambiente Compose foi validado com usuários autenticados, migrações e health checks; os comandos e resultados da entrega devem ser consultados junto às limitações do ambiente local.
 
 Pendência de dependência frontend: `npm audit` reporta cinco ocorrências de severidade alta derivadas do advisory [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf), em `picomatch` e sua cadeia de dependências de desenvolvimento, inclusive Vite. Na validação, o registry disponibilizava `picomatch` 4.0.7 como versão mais recente e o audit não oferecia correção compatível com Vite 8. O build passa, mas a auditoria retorna código 1. Revisar quando uma versão corrigida estiver disponível; o frontend não é iniciado pelo Compose.
+
+## Posts e feed — Lab 01.2
+
+Use a porta publicada pelo Compose, respeitando o `.env` local:
+
+```bash
+POST_URL="http://$(docker compose port post-service 8081)"
+curl -i -X POST "$POST_URL/api/posts" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"Meu primeiro post no Inter Social Lab!"}'
+curl "$POST_URL/api/posts/<uuid-retornado>"
+curl "$POST_URL/api/feed?page=0&size=20"
+```
+
+`POST /api/posts` retorna 201, cabeçalho `Location` e corpo:
+
+```json
+{"id":"c33b196e-ccf0-499a-9327-4825fc931b3b","content":"Meu primeiro post no Inter Social Lab!","status":"PUBLISHED","createdAt":"2026-11-18T12:00:00Z"}
+```
+
+Conteúdo é obrigatório, não pode conter apenas espaços e tem limite de 5.000 caracteres (validação Java em unidades UTF-16). O texto é preservado sem trim. Não há autoria fictícia. `GET /api/posts/{id}` retorna o mesmo contrato com 200, 404 para UUID inexistente e 400 para identificador inválido. Erros usam o tratamento nativo do Micronaut; entradas inválidas retornam 400.
+
+`GET /api/feed` aceita `page` a partir de zero e `size` entre 1 e 100 (padrões 0 e 20). Valores inválidos retornam 400. Exemplo de resposta vazia:
+
+```json
+{"content":[],"page":0,"size":20,"totalElements":0,"totalPages":0}
+```
+
+A consulta usa paginação SQL e contagem no PostgreSQL, filtrando `PUBLISHED` e ordenando por `created_at DESC, id DESC`. O índice composto `(status, created_at DESC, id DESC)` atende esse acesso. Paginação por offset é simples para esta etapa; inserções entre requisições podem deslocar páginas. Não há snapshot entre requisições.
+
+A migração V2 cria `posts`, com UUID gerado pela aplicação, constraints de conteúdo e status e timestamp com fuso horário. A aplicação usa `Instant` UTC com precisão de microssegundos. V1 permanece intacta. `PENDING_MODERATION` e `REJECTED` reservam estados futuros; nenhum fluxo de moderação foi implementado. Código e testes seguem organização feature-first, com reuso do repository de posts pelo feed e DTOs independentes das entidades. JDBC executa no executor bloqueante, fora do event loop.
+
+Para verificar persistência manualmente, crie um post, guarde seu UUID, execute `docker compose restart` e aguarde `docker compose up -d --wait`; consulte o mesmo UUID novamente. Preserve o volume existente.

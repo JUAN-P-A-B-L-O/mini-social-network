@@ -33,6 +33,11 @@ A utilização dessas tecnologias deve respeitar as necessidades de cada funcion
 - Evitar compartilhamento de entidades de domínio entre serviços.
 - Manter controllers enxutos e responsabilidades de negócio em camadas apropriadas.
 - Separar domínio, persistência, transporte e integrações externas.
+- Organizar código e testes primeiro por recurso de negócio (feature-first) e, dentro do recurso, por responsabilidade técnica, como controller, service, repository, entity, dto e mapper, conforme necessário.
+- Concentrar cada recurso em seus próprios pacotes; não criar pacotes técnicos globais com classes de múltiplos recursos, pacotes vazios ou classes artificiais.
+- Permitir reutilização de services e repositories entre recursos do mesmo microsserviço, evitando duplicação de regras.
+- Reservar pacotes compartilhados para componentes verdadeiramente transversais e justificados.
+- Priorizar camadas simples; não introduzir Clean Architecture, Hexagonal ou DDD completo apenas por formalidade.
 - Evitar abstrações prematuras e overengineering.
 - Não criar novos microsserviços sem necessidade concreta e aprovação.
 - Registrar decisões arquiteturais relevantes.
