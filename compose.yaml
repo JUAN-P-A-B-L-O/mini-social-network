@@ -42,10 +42,19 @@ services:
   media-service:
     build: ./services/media-service
     environment:
+      SERVER_HOST: 0.0.0.0
       SERVER_PORT: 8082
       JDBC_URL: jdbc:postgresql://postgres:5432/media_db
       DB_USER: media_user
       DB_PASSWORD: ${MEDIA_DB_PASSWORD:?Configure MEDIA_DB_PASSWORD in .env}
+      MEDIA_S3_BUCKET: ${MEDIA_S3_BUCKET:-}
+      MEDIA_UPLOAD_MAX_BYTES: ${MEDIA_UPLOAD_MAX_BYTES:-10485760}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_PROFILE: ${AWS_PROFILE:-default}
+      AWS_EC2_METADATA_DISABLED: "true"
     ports:
       - "127.0.0.1:${MEDIA_SERVICE_PORT:-8082}:8082"
     depends_on:

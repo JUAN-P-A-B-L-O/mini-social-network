@@ -1,6 +1,6 @@
 # Inter Social Lab
 
-Laboratório incremental de uma rede social baseada em microsserviços. O Lab 01.2 adiciona publicações de texto e feed paginado à fundação existente. Não há autenticação, comunicação entre serviços ou integração AWS.
+Laboratório incremental de uma rede social baseada em microsserviços. O Lab 01.2 adiciona publicações de texto e feed paginado. O Lab 01.3 adiciona upload direto de imagens para Amazon S3. O ambiente local ainda não possui autenticação ou comunicação entre serviços.
 
 ## Stack e decisões
 
@@ -33,7 +33,7 @@ Os serviços usam projetos Gradle independentes, sem build agregador ou bibliote
 └── README.md
 ```
 
-`post-service` é responsável por posts e possui `posts_db`/`posts_user`. `media-service` será responsável por mídia e possui `media_db`/`media_user`. O post-service também expõe as APIs de posts e feed descritas abaixo. Cada banco possui seu próprio histórico Flyway; V1 estabelece esse histórico sem criar tabelas de negócio.
+`post-service` é responsável por posts e possui `posts_db`/`posts_user`. `media-service` é responsável pelos uploads de imagens e possui `media_db`/`media_user`. O post-service também expõe as APIs de posts e feed descritas abaixo. Cada banco possui seu próprio histórico Flyway; V1 estabelece esse histórico sem criar tabelas de negócio.
 
 ## Pré-requisitos e configuração
 
@@ -167,3 +167,115 @@ A consulta usa paginação SQL e contagem no PostgreSQL, filtrando `PUBLISHED` e
 A migração V2 cria `posts`, com UUID gerado pela aplicação, constraints de conteúdo e status e timestamp com fuso horário. A aplicação usa `Instant` UTC com precisão de microssegundos. V1 permanece intacta. `PENDING_MODERATION` e `REJECTED` reservam estados futuros; nenhum fluxo de moderação foi implementado. Código e testes seguem organização feature-first, com reuso do repository de posts pelo feed e DTOs independentes das entidades. JDBC executa no executor bloqueante, fora do event loop.
 
 Para verificar persistência manualmente, crie um post, guarde seu UUID, execute `docker compose restart` e aguarde `docker compose up -d --wait`; consulte o mesmo UUID novamente. Preserve o volume existente.
+
+## Imagens — Lab 01.3
+
+O cliente pede uma autorização ao `media-service` e envia o arquivo diretamente ao S3. O serviço armazena os metadados em `media_db`. A migração V2 cria a tabela `media` e preserva o histórico anterior. O serviço escuta no loopback quando executado diretamente no host. No Compose, a porta também é publicada somente no loopback do host. Mantenha essas restrições enquanto a API estiver sem autenticação.
+
+| Endpoint | Resposta |
+| --- | --- |
+| `POST /api/media/uploads` | `201` com `Location` e autorização PUT. `400` para metadados inválidos ou tamanho acima do limite. |
+| `POST /api/media/{id}/confirm` | `200` com metadados e status `UPLOADED`. `404` para mídia desconhecida, `409` quando o S3 informa que o objeto não existe e `422` para divergência no tamanho ou no Content-Type. A repetição após sucesso devolve os mesmos metadados. |
+| `GET /api/media/{id}` | `200` com metadados ou `404` para mídia desconhecida. A resposta não inclui URL ou localização interna do objeto. |
+
+A solicitação aceita `image/jpeg` e `image/png`, um nome original de até 255 caracteres sem caracteres de controle e um tamanho positivo em bytes. A chave é gerada como `uploads/{uuid}`, independentemente do nome original. Operações de storage retornam `503` quando a configuração ou o acesso ao S3 está indisponível. A consulta de metadados e o health check continuam disponíveis.
+
+Uma solicitação de 1 MiB tem este formato.
+
+```json
+{"fileName":"foto.jpg","contentType":"image/jpeg","size":1048576}
+```
+
+A resposta inclui a URL e os cabeçalhos obrigatórios. A URL abaixo é ilustrativa.
+
+```json
+{
+  "mediaId": "1e2a6f16-198c-492f-abc8-b10651bb3621",
+  "uploadUrl": "https://bucket-exemplo.s3.us-east-1.amazonaws.com/uploads/1e2a6f16-198c-492f-abc8-b10651bb3621?assinatura=...",
+  "method": "PUT",
+  "requiredHeaders": {"Content-Type": "image/jpeg", "If-None-Match": "*"},
+  "expiresAt": "2026-11-22T21:00:00Z"
+}
+```
+
+Após a confirmação, a consulta devolve os metadados com status `UPLOADED`.
+
+```json
+{
+  "id": "1e2a6f16-198c-492f-abc8-b10651bb3621",
+  "fileName": "foto.jpg",
+  "contentType": "image/jpeg",
+  "size": 1048576,
+  "status": "UPLOADED",
+  "createdAt": "2026-11-22T20:55:00Z",
+  "updatedAt": "2026-11-22T20:56:10Z"
+}
+```
+
+### Configuração local do S3
+
+Use um bucket S3 de uso geral, dedicado ao laboratório, na região configurada. Na AWS, habilite todas as opções de **Block Public Access**, mantenha **Object Ownership** em **Bucket owner enforced** e use criptografia padrão SSE-S3. A aplicação usa apenas operações sobre objetos. O provisionamento e a configuração do bucket ficam a cargo de um administrador autorizado.
+
+| Variável | Uso |
+| --- | --- |
+| `AWS_REGION` | Região do bucket, por exemplo `us-east-1`. |
+| `MEDIA_S3_BUCKET` | Nome do bucket privado. |
+| `MEDIA_UPLOAD_MAX_BYTES` | Limite para o tamanho declarado, por padrão 10 MiB. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Credenciais temporárias, injetadas no ambiente do container. |
+| `AWS_PROFILE` | Perfil nomeado da cadeia padrão do SDK, quando os arquivos do perfil estiverem acessíveis ao processo. |
+
+Permita `s3:PutObject` e `s3:GetObject` no ARN `arn:aws:s3:::NOME_DO_BUCKET/uploads/*`. A segunda ação é exigida para `HeadObject`. Sem `s3:ListBucket`, o S3 pode devolver `403` ao consultar um objeto ausente, e a API responde `503` porque não consegue distinguir ausência de acesso negado. Para obter `409` nesse caso, conceda também `s3:ListBucket` no ARN do bucket dedicado, `arn:aws:s3:::NOME_DO_BUCKET`. [Permissões e códigos do HeadObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html)
+
+O SDK usa sua cadeia padrão de credenciais. Para usar um perfil no host com Docker, exporte as credenciais temporárias do perfil com o AWS CLI v2 a partir de um terminal local. Se o perfil usa IAM Identity Center, faça o login antes. Evite executar esses comandos com tracing habilitado. As credenciais são herdadas pelo Compose e ficam acessíveis a quem administra o Docker local. [Cadeia padrão do SDK](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/credentials-chain.html)
+
+```bash
+export AWS_REGION=us-east-1
+export MEDIA_S3_BUCKET=seu-bucket-privado
+eval "$(aws configure export-credentials --profile lab --format env)"
+docker compose up --build -d --wait
+```
+
+Para execução direta no host com `./gradlew run`, use `AWS_PROFILE=lab` com o perfil disponível em `~/.aws` e a configuração JDBC descrita acima. Nenhuma credencial precisa entrar no build da imagem. Se usar o Compose sem a configuração opcional de AWS, o PostgreSQL e os dois microsserviços continuam iniciando normalmente.
+
+### Validação manual
+
+Com bucket e credenciais configurados, execute da raiz do repositório. O exemplo usa Bash, `curl` e `jq`.
+
+```bash
+MEDIA_URL="http://$(docker compose port media-service 8082)"
+IMAGE=foto.jpg
+CONTENT_TYPE=image/jpeg
+
+payload=$(jq -n --arg name "$(basename "$IMAGE")" --arg type "$CONTENT_TYPE" \
+  --argjson size "$(wc -c < "$IMAGE")" '{fileName:$name,contentType:$type,size:$size}')
+upload=$(curl -fsS -X POST "$MEDIA_URL/api/media/uploads" \
+  -H 'Content-Type: application/json' -d "$payload")
+MEDIA_ID=$(jq -er '.mediaId' <<< "$upload")
+UPLOAD_URL=$(jq -er '.uploadUrl' <<< "$upload")
+
+curl -fsS "$MEDIA_URL/api/media/$MEDIA_ID" | jq .
+curl -fsS -X PUT -H "Content-Type: $CONTENT_TYPE" -H 'If-None-Match: *' \
+  --upload-file "$IMAGE" "$UPLOAD_URL"
+curl -fsS -X POST "$MEDIA_URL/api/media/$MEDIA_ID/confirm" | jq .
+curl -fsS "$MEDIA_URL/api/media/$MEDIA_ID" | jq .
+
+# Opcional: verificar o registro diretamente no PostgreSQL local.
+docker compose exec -T postgres psql -U postgres -d media_db -v media_id="$MEDIA_ID" <<'SQL'
+SELECT id, file_name, content_type, size, status, created_at, updated_at
+FROM media WHERE id = :'media_id'::uuid;
+SQL
+unset UPLOAD_URL upload
+```
+
+Os testes automatizados usam PostgreSQL via Testcontainers, um stub de storage e assinatura SDK com credenciais fictícias. A suíte roda localmente sem bucket ou credenciais reais.
+
+```bash
+(cd services/media-service && ./gradlew test installDist)
+(cd services/post-service && ./gradlew test installDist)
+docker compose config --quiet
+docker compose up --build -d --wait
+```
+
+A URL autoriza apenas o PUT para a chave assinada por até cinco minutos e deve ser tratada como segredo temporário. O cabeçalho assinado `If-None-Match: *` impede substituir um objeto existente com a mesma autorização. Se o objeto já existir e for recusado na confirmação, solicite uma nova autorização para outra chave. A PUT não garante sozinha o limite de tamanho. Na confirmação, `HeadObject` verifica a existência e compara o tamanho real e o Content-Type registrado no S3. O nome, a extensão e o Content-Type podem ser declarados pelo cliente e não comprovam os bytes da imagem. Arquivos recusados ou abandonados podem permanecer no bucket e consumir armazenamento. A limpeza e a inspeção do conteúdo ficam para etapas futuras.
+
+A confirmação manual é intermediária e pode ser substituída por notificações S3/SQS em uma próxima etapa. `UPLOADED` registra apenas a confirmação do upload. A mídia ainda não é publicada no feed. [Escritas condicionais no S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html)

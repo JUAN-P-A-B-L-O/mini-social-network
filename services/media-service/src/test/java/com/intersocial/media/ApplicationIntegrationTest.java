@@ -28,7 +28,9 @@ class ApplicationIntegrationTest {
                 "micronaut.server.port", -1,
                 "datasources.default.url", postgres.getJdbcUrl(),
                 "datasources.default.username", postgres.getUsername(),
-                "datasources.default.password", postgres.getPassword()))) {
+                "datasources.default.password", postgres.getPassword(),
+                "media.s3.region", "",
+                "media.s3.bucket", ""))) {
             try (var connection = DriverManager.getConnection(
                     postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                  var statement = connection.createStatement()) {
@@ -48,6 +50,15 @@ class ApplicationIntegrationTest {
                         HttpResponse.BodyHandlers.ofString());
                 assertEquals(200, response.statusCode());
                 assertTrue(response.body().contains("UP"));
+
+                var upload = client.send(HttpRequest.newBuilder(
+                                URI.create("http://localhost:" + server.getPort() + "/api/media/uploads"))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString("""
+                                {"fileName":"foto.png","contentType":"image/png","size":10}
+                                """))
+                        .build(), HttpResponse.BodyHandlers.ofString());
+                assertEquals(503, upload.statusCode(), upload.body());
             }
         }
     }
