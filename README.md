@@ -7,7 +7,7 @@ Laboratório incremental de uma rede social baseada em microsserviços. O Lab 01
 - Java 21, Micronaut Platform 4.10.24, Gradle 8.14.3 com wrapper por serviço.
 - Micronaut Data JDBC, HikariCP, PostgreSQL 17, Flyway, Validation, Jackson e Management.
 - JUnit 5 e Testcontainers com PostgreSQL real.
-- React 19, TypeScript e Vite 8; frontend vazio, fora do Compose.
+- React 19, TypeScript e Vite 8; frontend executado fora do Compose.
 
 Micronaut 5.2.6 é a versão geral atual, mas exige Java 25. A linha estável 4.10.24 foi escolhida para respeitar Java 21. Referências: [baseline Java](https://micronaut.io/2026/04/27/micronaut-framework-5-0-with-java-25-baseline/) e [versões publicadas](https://repo.maven.apache.org/maven2/io/micronaut/platform/micronaut-platform/maven-metadata.xml).
 
@@ -22,8 +22,8 @@ Os serviços usam projetos Gradle independentes, sem build agregador ou bibliote
 │   └── media-service/     # Application, recursos, migrações, testes, wrapper e Dockerfile
 ├── frontend/
 │   └── src/
-│       ├── app/           # Raiz React sem telas
-│       └── config/        # Configuração pública para futuras APIs
+│       ├── app/           # Raiz React
+│       └── config/        # Configuração pública das APIs
 ├── infrastructure/postgres/init-databases.sh
 ├── docs/                  # Reservado para documentação técnica futura
 ├── compose.yaml
@@ -127,7 +127,9 @@ npm run dev
 npm run build
 ```
 
-Vite informa a URL de desenvolvimento no terminal. Não há telas ou requisições nesta etapa. `src/config/api.ts` reserva bases configuráveis por `VITE_POST_API_BASE_URL` e `VITE_MEDIA_API_BASE_URL`; os caminhos padrão `/api/posts` e `/api/media` ainda não possuem roteamento no frontend. Proxy/CORS serão definidos quando houver integração real. Variáveis `VITE_*` são públicas e nunca devem conter secrets.
+Abra a URL informada pelo Vite no terminal. O proxy encaminha `/api/posts` e `/api/feed` ao `post-service` em `127.0.0.1:8081` e `/api/media` ao `media-service` em `127.0.0.1:8082`. O navegador usa caminhos relativos à origem do Vite, inclusive quando ele sobe em outra porta.
+
+Se você alterar `POST_SERVICE_PORT` ou `MEDIA_SERVICE_PORT` no Compose, consulte as portas publicadas com `docker compose port post-service 8081` e `docker compose port media-service 8082` na raiz do projeto. Copie `frontend/.env.example` para `frontend/.env.local`, ajuste `POST_API_PROXY_TARGET` e `MEDIA_API_PROXY_TARGET` para os endereços publicados e reinicie o Vite. Com as portas padrão, o arquivo local é opcional. Mantenha `VITE_POST_API_BASE_URL` e `VITE_MEDIA_API_BASE_URL` relativos para usar o proxy. Variáveis `VITE_*` são públicas e devem conter apenas valores não sensíveis.
 
 ## Validação desta fundação
 
