@@ -53,7 +53,7 @@ Substitua os três valores de senha por senhas locais distintas antes de iniciar
 | `POST_SERVICE_PORT` | Porta publicada no host, padrão 8081 |
 | `MEDIA_SERVICE_PORT` | Porta publicada no host, padrão 8082 |
 
-Os containers recebem `SERVER_PORT`, `JDBC_URL`, `DB_USER` e `DB_PASSWORD`; `DB_POOL_SIZE` é opcional e tem padrão 5. A comunicação interna usa `postgres:5432`. Somente as APIs são publicadas, no loopback do host. PostgreSQL fica acessível pela rede Compose.
+Os containers recebem `SERVER_PORT`, `JDBC_URL`, `DB_USER` e `DB_PASSWORD`; `DB_POOL_SIZE` é opcional e tem padrão 5. A comunicação com o banco usa `postgres:5432`. O post-service consulta os metadados de mídia em `http://media-service:8082` no Compose. Fora do Compose, usa `http://127.0.0.1:8082` por padrão e aceita `MEDIA_SERVICE_URL`. Somente as APIs são publicadas, no loopback do host. PostgreSQL fica acessível pela rede Compose.
 
 ## Executar o backend
 
@@ -153,10 +153,10 @@ curl "$POST_URL/api/feed?page=0&size=20"
 `POST /api/posts` retorna 201, cabeçalho `Location` e corpo:
 
 ```json
-{"id":"c33b196e-ccf0-499a-9327-4825fc931b3b","content":"Meu primeiro post no Inter Social Lab!","status":"PUBLISHED","createdAt":"2026-11-18T12:00:00Z"}
+{"id":"c33b196e-ccf0-499a-9327-4825fc931b3b","content":"Meu primeiro post no Inter Social Lab!","status":"PUBLISHED","createdAt":1795003200.000000000}
 ```
 
-Conteúdo é obrigatório, não pode conter apenas espaços e tem limite de 5.000 caracteres (validação Java em unidades UTF-16). O texto é preservado sem trim. Não há autoria fictícia. `GET /api/posts/{id}` retorna o mesmo contrato com 200, 404 para UUID inexistente e 400 para identificador inválido. Erros usam o tratamento nativo do Micronaut; entradas inválidas retornam 400.
+`createdAt` é expresso em segundos Unix, com fração para a precisão de microssegundos. Conteúdo é obrigatório, não pode conter apenas espaços e tem limite de 5.000 caracteres (validação Java em unidades UTF-16). O texto é preservado sem trim. Não há autoria fictícia. `GET /api/posts/{id}` retorna o mesmo contrato com 200, 404 para UUID inexistente e 400 para identificador inválido. Erros usam o tratamento nativo do Micronaut; entradas inválidas retornam 400.
 
 `GET /api/feed` aceita `page` a partir de zero e `size` entre 1 e 100 (padrões 0 e 20). Valores inválidos retornam 400. Exemplo de resposta vazia:
 
@@ -164,9 +164,9 @@ Conteúdo é obrigatório, não pode conter apenas espaços e tem limite de 5.00
 {"content":[],"page":0,"size":20,"totalElements":0,"totalPages":0}
 ```
 
-A consulta usa paginação SQL e contagem no PostgreSQL, filtrando `PUBLISHED` e ordenando por `created_at DESC, id DESC`. O índice composto `(status, created_at DESC, id DESC)` atende esse acesso. Paginação por offset é simples para esta etapa; inserções entre requisições podem deslocar páginas. Não há snapshot entre requisições.
+A consulta usa paginação SQL e contagem no PostgreSQL, filtrando `PUBLISHED` e `APPROVED` e ordenando por `created_at DESC, id DESC`. Um índice parcial sobre esses estados atende a consulta. Paginação por offset é simples para esta etapa; inserções entre requisições podem deslocar páginas. Não há snapshot entre requisições.
 
-A migração V2 cria `posts`, com UUID gerado pela aplicação, constraints de conteúdo e status e timestamp com fuso horário. A aplicação usa `Instant` UTC com precisão de microssegundos. V1 permanece intacta. `PENDING_MODERATION` e `REJECTED` reservam estados futuros; nenhum fluxo de moderação foi implementado. Código e testes seguem organização feature-first, com reuso do repository de posts pelo feed e DTOs independentes das entidades. JDBC executa no executor bloqueante, fora do event loop.
+A migração V2 cria `posts`, com UUID gerado pela aplicação, constraints de conteúdo e status e timestamp com fuso horário. A aplicação usa `Instant` UTC com precisão de microssegundos. A migração V3 evolui o catálogo de estados e adiciona a associação opcional à mídia e a Outbox. V1 e V2 permanecem intactas. Código e testes seguem organização feature-first, com reuso do repository de posts pelo feed e DTOs independentes das entidades. JDBC executa no executor bloqueante, fora do event loop.
 
 Para verificar persistência manualmente, crie um post, guarde seu UUID, execute `docker compose restart` e aguarde `docker compose up -d --wait`; consulte o mesmo UUID novamente. Preserve o volume existente.
 
@@ -230,7 +230,7 @@ Use um bucket S3 de uso geral, dedicado ao laboratório, na região configurada.
 
 Permita `s3:PutObject` e `s3:GetObject` no ARN `arn:aws:s3:::NOME_DO_BUCKET/uploads/*`. A segunda ação é exigida para `HeadObject`. Sem `s3:ListBucket`, o S3 pode devolver `403` ao consultar um objeto ausente, e a API responde `503` porque não consegue distinguir ausência de acesso negado. Para obter `409` nesse caso, conceda também `s3:ListBucket` no ARN do bucket dedicado, `arn:aws:s3:::NOME_DO_BUCKET`. [Permissões e códigos do HeadObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html)
 
-No WSL, autentique o perfil com `aws login --profile inter-social-lab` quando a sessão precisar ser renovada. Execute o Compose com o mesmo usuário não-root. O `DefaultCredentialsProvider` lê a propriedade `login_session` do perfil `inter-social-lab` e carrega as credenciais temporárias por meio do módulo `signin`. A sobreposição do Compose monta os arquivos de configuração em modo somente leitura e o diretório do cache em modo leitura e escrita para permitir a atualização da sessão pelo SDK. Os arquivos mantêm as permissões do WSL e os volumes ficam restritos ao `media-service`. [Cadeia padrão do SDK](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/credentials-chain.html) · [Cache e renovação do aws login](https://docs.aws.amazon.com/sdkref/latest/guide/feature-login-credentials.html)
+No WSL, autentique o perfil com `aws login --profile inter-social-lab` quando a sessão precisar ser renovada. Execute o Compose com o mesmo usuário não-root. O `DefaultCredentialsProvider` lê a propriedade `login_session` do perfil `inter-social-lab` e carrega as credenciais temporárias por meio do módulo `signin`. A sobreposição do Compose monta os arquivos de configuração em modo somente leitura e o diretório do cache em modo leitura e escrita para permitir a atualização da sessão pelo SDK. Os arquivos mantêm as permissões do WSL e os volumes ficam restritos aos serviços que integram com AWS. [Cadeia padrão do SDK](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/credentials-chain.html) · [Cache e renovação do aws login](https://docs.aws.amazon.com/sdkref/latest/guide/feature-login-credentials.html)
 
 ```bash
 export COMPOSE_FILE=compose.yaml:compose.aws-login.yaml
@@ -286,4 +286,126 @@ docker compose up --build -d --wait
 
 A URL autoriza apenas o PUT para a chave assinada por até cinco minutos e deve ser tratada como segredo temporário. O cabeçalho assinado `If-None-Match: *` impede substituir um objeto existente com a mesma autorização. Se o objeto já existir e for recusado na confirmação, solicite uma nova autorização para outra chave. A PUT não garante sozinha o limite de tamanho. Na confirmação, `HeadObject` verifica a existência e compara o tamanho real e o Content-Type registrado no S3. O nome, a extensão e o Content-Type podem ser declarados pelo cliente e não comprovam os bytes da imagem. Arquivos recusados ou abandonados podem permanecer no bucket e consumir armazenamento. A limpeza e a inspeção do conteúdo ficam para etapas futuras.
 
-A confirmação manual é intermediária e pode ser substituída por notificações S3/SQS em uma próxima etapa. `UPLOADED` registra apenas a confirmação do upload. A mídia ainda não é publicada no feed. [Escritas condicionais no S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html)
+A confirmação manual é intermediária e pode ser substituída por notificações S3/SQS em uma próxima etapa. `UPLOADED` registra a confirmação do upload e permite solicitar moderação ao publicar. [Escritas condicionais no S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html)
+
+## Posts com imagem — Lab 01.4.1
+
+No frontend, escreva o texto, anexe uma imagem JPEG ou PNG e clique em **Enviar imagem**. O cliente usa a autorização PUT do S3 e confirma o upload com o media-service. Depois de ver `UPLOADED`, clique em **Publicar**. O frontend mostra o status retornado pelo post-service. Use **Atualizar status** para consultar uma vez por clique e **Link do status** para voltar à consulta depois.
+
+`POST /api/posts` aceita `mediaId` opcional no formato UUID canônico. A consulta HTTP ao media-service verifica o identificador e o estado `UPLOADED` antes da transação do post-service. Para posts com imagem, o HTTP 201 confirma a gravação do post e da solicitação, inclui `mediaId` e retorna `PENDING_MODERATION`. O `Location` aponta para `GET /api/posts/{id}`, que retorna o estado atual. Posts de texto continuam com `PUBLISHED` e o campo `mediaId` é omitido.
+
+| HTTP | Motivo |
+| --- | --- |
+| 400 | UUID da mídia ou conteúdo inválido |
+| 404 | Mídia inexistente |
+| 409 | Mídia ainda sem confirmação ou já vinculada a outro post |
+| 503 | Falha ao consultar o media-service |
+
+| Estado | Visibilidade no feed |
+| --- | --- |
+| `PUBLISHED` | Visível. Estado inicial de posts de texto. |
+| `PENDING_MODERATION` | Oculto. Estado inicial de posts com imagem. |
+| `APPROVED` | Visível quando houver um fluxo futuro de aprovação. |
+| `REJECTED` | Oculto. Reservado para o fluxo de moderação. |
+| `REVIEW_REQUIRED` | Oculto. Reservado para o fluxo de moderação. |
+
+Os posts com imagem permanecem pendentes nesta etapa. O Lab ainda não tem Rekognition, consumidor de resultados ou rota de leitura da imagem. O bucket permanece privado e o post-service guarda somente o UUID da mídia. As APIs seguem locais enquanto estiverem sem autenticação.
+
+### Transactional Outbox
+
+A migração V3 adiciona a restrição de unicidade de `media_id` e a tabela `image_moderation_outbox` no PostgreSQL do post-service. O vínculo com uma imagem e o evento são gravados na mesma transação. Uma falha na Outbox desfaz a criação do post. A unicidade também protege contra requisições concorrentes.
+
+O publisher é desabilitado por padrão. Quando habilitado, verifica a cada cinco segundos se há eventos disponíveis e processa até dez por rodada. Cada envio usa uma transação própria e reserva uma linha com `FOR UPDATE SKIP LOCKED`, permitindo que outros processos trabalhem em eventos diferentes. O SDK tem timeout de cinco segundos por chamada. O registro recebe `published_at` depois que o SQS aceita a mensagem. Na falha de envio, o registro permanece pendente, acumula uma tentativa e é reagendado com backoff exponencial de cinco segundos até quinze minutos. Eventos ficam armazenados enquanto o publisher está desabilitado.
+
+Uma falha entre o aceite do SQS e a confirmação de `published_at` pode causar reenvio com o mesmo `eventId`. A fila Standard pode entregar duplicatas e alterar a ordem. A DLQ recebe mensagens com falhas de processamento do futuro consumidor. Falhas no envio são tratadas na própria Outbox. Os registros publicados permanecem no banco durante o laboratório.
+
+### Evento ImageModerationRequested
+
+```json
+{
+  "eventId": "042d25cd-7fb4-40dd-aaf2-6183683565bb",
+  "eventType": "ImageModerationRequested",
+  "eventVersion": 1,
+  "occurredAt": "2026-11-22T20:00:00Z",
+  "postId": "c33b196e-ccf0-499a-9327-4825fc931b3b",
+  "mediaId": "1e2a6f16-198c-492f-abc8-b10651bb3621"
+}
+```
+
+O corpo da mensagem é JSON. `occurredAt` é o instante UTC de criação do post, em ISO 8601. O consumidor futuro deverá interpretar `eventType` e `eventVersion`, tratar `eventId` como chave idempotente e usar `postId` e `mediaId` para localizar o post e a mídia. Bytes, localização S3, URLs assinadas e credenciais ficam fora do contrato. O envio ao SQS confirma somente a entrega da solicitação.
+
+### Configuração do SQS
+
+| Variável | Uso |
+| --- | --- |
+| `MODERATION_SQS_ENABLED` | Defina como `true` para iniciar o publisher. Padrão `false`. |
+| `AWS_REGION` | Região das filas. No Compose atual, também é usada para o bucket S3. |
+| `MODERATION_QUEUE_URL` | URL da fila Standard `inter-social-moderation-requests`. |
+| `MODERATION_DLQ_URL` | URL de `inter-social-moderation-requests-dlq`, usada nos comandos operacionais. |
+
+O post-service usa o AWS SDK for Java 2.x com `DefaultCredentialsProvider`. Para o perfil `inter-social-lab`, use a sobreposição `compose.aws-login.yaml` e as mesmas opções de UID, GID e cache da configuração do S3 acima. O post-service também aceita `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e `AWS_SESSION_TOKEN` de uma sessão temporária exportada no terminal. Execute `docker compose up --build -d` após configurar as variáveis. Nenhuma credencial é adicionada às imagens.
+
+Se as duas filas ainda não existirem, um administrador autorizado pode criá-las com AWS CLI e `jq`. Use a mesma conta e região para ambas. Para filas existentes, consulte os atributos e reaproveite suas URLs. [DLQs do Amazon SQS](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html)
+
+```bash
+export AWS_PROFILE=inter-social-lab
+export AWS_REGION=us-east-1
+
+MODERATION_DLQ_URL=$(aws sqs create-queue --queue-name inter-social-moderation-requests-dlq \
+  --attributes SqsManagedSseEnabled=true,MessageRetentionPeriod=1209600 --query QueueUrl --output text)
+MODERATION_QUEUE_URL=$(aws sqs create-queue --queue-name inter-social-moderation-requests \
+  --attributes SqsManagedSseEnabled=true,MessageRetentionPeriod=345600 --query QueueUrl --output text)
+
+DLQ_ARN=$(aws sqs get-queue-attributes --queue-url "$MODERATION_DLQ_URL" \
+  --attribute-names QueueArn --query Attributes.QueueArn --output text)
+REQUEST_ARN=$(aws sqs get-queue-attributes --queue-url "$MODERATION_QUEUE_URL" \
+  --attribute-names QueueArn --query Attributes.QueueArn --output text)
+aws sqs set-queue-attributes --queue-url "$MODERATION_DLQ_URL" --attributes "$(
+  jq -cn --arg arn "$REQUEST_ARN" \
+    '{RedriveAllowPolicy:({redrivePermission:"byQueue",sourceQueueArns:[$arn]} | tojson)}'
+)"
+aws sqs set-queue-attributes --queue-url "$MODERATION_QUEUE_URL" --attributes "$(
+  jq -cn --arg arn "$DLQ_ARN" \
+    '{RedrivePolicy:({deadLetterTargetArn:$arn,maxReceiveCount:5} | tojson)}'
+)"
+```
+
+- **Publisher** precisa apenas de `sqs:SendMessage` no ARN `arn:aws:sqs:REGIÃO:CONTA:inter-social-moderation-requests` com a criptografia gerenciada pelo SQS acima. A fila é informada por URL.
+- **Provisionamento manual** exige `sqs:CreateQueue`, `sqs:GetQueueAttributes` e `sqs:SetQueueAttributes` nos ARNs das duas filas para os comandos acima. Para obter a URL de uma fila existente com `aws sqs get-queue-url`, use `sqs:GetQueueUrl` no ARN dessa fila.
+- **Validação manual** exige `sqs:ReceiveMessage` na fila de solicitação para ler o corpo do evento. [Ações do Amazon SQS e recursos IAM](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-api-permissions-reference.html)
+
+### Validação
+
+Sem AWS, mantenha `MODERATION_SQS_ENABLED=false` e execute os comandos abaixo. Os testes do post-service usam PostgreSQL real e servidores HTTP locais para simular media-service e SQS. O frontend simula os serviços e o S3.
+
+```bash
+(cd services/post-service && ./gradlew test installDist)
+(cd services/media-service && ./gradlew test installDist)
+(cd frontend && npm ci && npm test && npm run build)
+docker compose config --quiet
+docker compose up --build -d --wait
+```
+
+Com S3 e SQS configurados, faça o upload e a confirmação da seção anterior para obter `MEDIA_ID`. Configure as URLs das filas no ambiente do terminal e no `.env` local, habilite o publisher e recrie o post-service com Compose. Em seguida, crie um post de teste e guarde o `id` retornado.
+
+```bash
+POST_URL="http://$(docker compose port post-service 8081)"
+post=$(curl -fsS -X POST "$POST_URL/api/posts" -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg id "$MEDIA_ID" '{content:"Teste de moderação",mediaId:$id}')")
+POST_ID=$(jq -er 'select(.status == "PENDING_MODERATION") | .id' <<< "$post")
+curl -fsS "$POST_URL/api/posts/$POST_ID"
+curl -fsS "$POST_URL/api/feed?page=0&size=20"
+
+aws sqs receive-message --queue-url "$MODERATION_QUEUE_URL" \
+  --wait-time-seconds 20 --max-number-of-messages 10 --output json | \
+  jq --arg id "$POST_ID" '.Messages[]?.Body | fromjson | select(.postId == $id)'
+```
+
+Faça a leitura em uma fila de laboratório. Cada recebimento conta para a política da DLQ. O evento deve conter o mesmo `postId` e `mediaId`. No banco local, confira a confirmação de envio na Outbox. O post permanece com `PENDING_MODERATION` mesmo após a publicação do evento.
+
+```bash
+docker compose exec -T postgres psql -U postgres -d posts_db -v post_id="$POST_ID" <<'SQL'
+SELECT event_id, attempts, next_attempt_at, published_at
+FROM image_moderation_outbox WHERE post_id = :'post_id'::uuid;
+SQL
+```
