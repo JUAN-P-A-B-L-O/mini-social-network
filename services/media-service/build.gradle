@@ -29,6 +29,7 @@ dependencies {
     implementation 'io.micronaut.validation:micronaut-validation'
     implementation platform('software.amazon.awssdk:bom:2.41.0')
     implementation 'software.amazon.awssdk:s3'
+    runtimeOnly 'software.amazon.awssdk:signin'
     runtimeOnly 'software.amazon.awssdk:sts'
     runtimeOnly 'software.amazon.awssdk:sso'
     runtimeOnly 'software.amazon.awssdk:ssooidc'

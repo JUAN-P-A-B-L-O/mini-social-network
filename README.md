@@ -221,27 +221,32 @@ Use um bucket S3 de uso geral, dedicado ao laboratório, na região configurada.
 | `AWS_REGION` | Região do bucket, por exemplo `us-east-1`. |
 | `MEDIA_S3_BUCKET` | Nome do bucket privado. |
 | `MEDIA_UPLOAD_MAX_BYTES` | Limite para o tamanho declarado, por padrão 10 MiB. |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Credenciais temporárias, injetadas no ambiente do container. |
-| `AWS_PROFILE` | Perfil nomeado da cadeia padrão do SDK, quando os arquivos do perfil estiverem acessíveis ao processo. |
+| `AWS_CONFIG_FILE` | No WSL, caminho absoluto do arquivo de configuração. O padrão é `~/.aws/config`. |
+| `AWS_SHARED_CREDENTIALS_FILE` | Caminho absoluto opcional de um arquivo de credenciais compartilhadas. O perfil `inter-social-lab` usa `aws login` e dispensa esse arquivo. |
+| `AWS_LOGIN_CACHE_DIRECTORY` | No WSL, diretório do cache de `aws login`. O padrão é `~/.aws/login/cache`. |
+| `MEDIA_AWS_UID`, `MEDIA_AWS_GID` | UID e GID do usuário não-root do WSL que tem acesso ao perfil e ao cache. |
 
 Permita `s3:PutObject` e `s3:GetObject` no ARN `arn:aws:s3:::NOME_DO_BUCKET/uploads/*`. A segunda ação é exigida para `HeadObject`. Sem `s3:ListBucket`, o S3 pode devolver `403` ao consultar um objeto ausente, e a API responde `503` porque não consegue distinguir ausência de acesso negado. Para obter `409` nesse caso, conceda também `s3:ListBucket` no ARN do bucket dedicado, `arn:aws:s3:::NOME_DO_BUCKET`. [Permissões e códigos do HeadObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html)
 
-O SDK usa sua cadeia padrão de credenciais. Para usar um perfil no host com Docker, exporte as credenciais temporárias do perfil com o AWS CLI v2 a partir de um terminal local. Se o perfil usa IAM Identity Center, faça o login antes. Evite executar esses comandos com tracing habilitado. As credenciais são herdadas pelo Compose e ficam acessíveis a quem administra o Docker local. [Cadeia padrão do SDK](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/credentials-chain.html)
+No WSL, autentique o perfil com `aws login --profile inter-social-lab` quando a sessão precisar ser renovada. Execute o Compose com o mesmo usuário não-root. O `DefaultCredentialsProvider` lê a propriedade `login_session` do perfil `inter-social-lab` e carrega as credenciais temporárias por meio do módulo `signin`. A sobreposição do Compose monta os arquivos de configuração em modo somente leitura e o diretório do cache em modo leitura e escrita para permitir a atualização da sessão pelo SDK. Os arquivos mantêm as permissões do WSL e os volumes ficam restritos ao `media-service`. [Cadeia padrão do SDK](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/credentials-chain.html) · [Cache e renovação do aws login](https://docs.aws.amazon.com/sdkref/latest/guide/feature-login-credentials.html)
 
 ```bash
+export COMPOSE_FILE=compose.yaml:compose.aws-login.yaml
+export MEDIA_AWS_UID="$(id -u)" MEDIA_AWS_GID="$(id -g)"
 export AWS_REGION=us-east-1
 export MEDIA_S3_BUCKET=seu-bucket-privado
-eval "$(aws configure export-credentials --profile lab --format env)"
-docker compose up --build -d --wait
+docker compose up --build -d
+docker compose ps
 ```
 
-Para execução direta no host com `./gradlew run`, use `AWS_PROFILE=lab` com o perfil disponível em `~/.aws` e a configuração JDBC descrita acima. Nenhuma credencial precisa entrar no build da imagem. Se usar o Compose sem a configuração opcional de AWS, o PostgreSQL e os dois microsserviços continuam iniciando normalmente.
+Para repetir a configuração em novos terminais, é possível definir essas cinco variáveis no `.env` local, usando os valores numéricos de `id -u` e `id -g`. Se o arquivo de configuração ou o diretório do cache estiver em outro local, indique o caminho absoluto nas variáveis da tabela. O cache deve pertencer ao usuário do WSL, com permissão de leitura dos arquivos e escrita no diretório. Para usar o Compose sem AWS, mantenha `COMPOSE_FILE` sem a sobreposição. Para execução direta com `./gradlew run`, use `AWS_PROFILE=inter-social-lab`, as variáveis de região e bucket e a configuração JDBC descrita acima.
 
 ### Validação manual
 
 Com bucket e credenciais configurados, execute da raiz do repositório. O exemplo usa Bash, `curl` e `jq`.
 
 ```bash
+set +x
 MEDIA_URL="http://$(docker compose port media-service 8082)"
 IMAGE=foto.jpg
 CONTENT_TYPE=image/jpeg
@@ -253,18 +258,19 @@ upload=$(curl -fsS -X POST "$MEDIA_URL/api/media/uploads" \
 MEDIA_ID=$(jq -er '.mediaId' <<< "$upload")
 UPLOAD_URL=$(jq -er '.uploadUrl' <<< "$upload")
 
-curl -fsS "$MEDIA_URL/api/media/$MEDIA_ID" | jq .
-curl -fsS -X PUT -H "Content-Type: $CONTENT_TYPE" -H 'If-None-Match: *' \
-  --upload-file "$IMAGE" "$UPLOAD_URL"
-curl -fsS -X POST "$MEDIA_URL/api/media/$MEDIA_ID/confirm" | jq .
-curl -fsS "$MEDIA_URL/api/media/$MEDIA_ID" | jq .
+printf 'url = "%s"\n' "$UPLOAD_URL" | curl -fsS --config - \
+  -X PUT -H "Content-Type: $CONTENT_TYPE" -H 'If-None-Match: *' --upload-file "$IMAGE"
+unset UPLOAD_URL upload
+curl -fsS -X POST "$MEDIA_URL/api/media/$MEDIA_ID/confirm" | jq -e 'select(.status == "UPLOADED")'
+curl -fsS "$MEDIA_URL/api/media/$MEDIA_ID" | jq -e 'select(.status == "UPLOADED")'
+aws s3api head-object --profile inter-social-lab --region "$AWS_REGION" \
+  --bucket "$MEDIA_S3_BUCKET" --key "uploads/$MEDIA_ID" --query '[ContentLength, ContentType]'
 
 # Opcional: verificar o registro diretamente no PostgreSQL local.
 docker compose exec -T postgres psql -U postgres -d media_db -v media_id="$MEDIA_ID" <<'SQL'
 SELECT id, file_name, content_type, size, status, created_at, updated_at
 FROM media WHERE id = :'media_id'::uuid;
 SQL
-unset UPLOAD_URL upload
 ```
 
 Os testes automatizados usam PostgreSQL via Testcontainers, um stub de storage e assinatura SDK com credenciais fictícias. A suíte roda localmente sem bucket ou credenciais reais.

@@ -1,0 +1,26 @@
+services:
+  media-service:
+    user: "${MEDIA_AWS_UID:?Set MEDIA_AWS_UID to the non-root WSL user ID}:${MEDIA_AWS_GID:?Set MEDIA_AWS_GID to the WSL group ID}"
+    environment:
+      AWS_PROFILE: inter-social-lab
+      AWS_CONFIG_FILE: /aws-config
+      AWS_SHARED_CREDENTIALS_FILE: /aws-credentials
+      AWS_LOGIN_CACHE_DIRECTORY: /aws-login-cache
+    volumes:
+      - type: bind
+        source: ${AWS_CONFIG_FILE:-${HOME}/.aws/config}
+        target: /aws-config
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${AWS_SHARED_CREDENTIALS_FILE:-/dev/null}
+        target: /aws-credentials
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${AWS_LOGIN_CACHE_DIRECTORY:-${HOME}/.aws/login/cache}
+        target: /aws-login-cache
+        bind:
+          create_host_path: false
