@@ -2,8 +2,8 @@ import { useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } 
 import { apiConfig } from '../../../config/api';
 import { errorMessage } from '../../../shared/lib/http';
 import { useImageUpload } from '../../media/hooks/useImageUpload';
-import { createPost } from '../services/postApi';
-import { POST_MAX_LENGTH } from '../types/post';
+import { createPost, getPost, postStatusUrl } from '../services/postApi';
+import { POST_MAX_LENGTH, type PostResponse } from '../types/post';
 
 const imageTypes = ['image/jpeg', 'image/png'];
 const uploadMessages: Partial<Record<ReturnType<typeof useImageUpload>['phase'], string>> = {
@@ -32,6 +32,9 @@ export function PostComposer({ onPublished }: { onPublished: () => void }) {
   const [attachmentError, setAttachmentError] = useState('');
   const [postError, setPostError] = useState('');
   const [published, setPublished] = useState(false);
+  const [imagePost, setImagePost] = useState<PostResponse | null>(null);
+  const [checkingStatus, setCheckingStatus] = useState(false);
+  const [statusError, setStatusError] = useState<{ postId: string; message: string } | null>(null);
   const [publishing, setPublishing] = useState(false);
   const submission = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -49,11 +52,12 @@ export function PostComposer({ onPublished }: { onPublished: () => void }) {
 
   const overLimit = content.length > POST_MAX_LENGTH;
   const busy = publishing || upload.busy;
-  const alreadyUploaded = upload.phase === 'UPLOADED';
-  const canSubmit = file ? !alreadyUploaded : Boolean(content.trim()) && !overLimit;
+  const mediaId = upload.phase === 'UPLOADED' ? upload.media?.id : undefined;
+  const needsUpload = file !== null && !mediaId;
+  const canSubmit = needsUpload || (Boolean(content.trim()) && !overLimit);
   const uploadMessage = uploadMessages[upload.phase];
   const progress = publishing ? 'Publicando…' : uploadMessage;
-  const action = !file ? 'Publicar' : upload.phase === 'ERROR' ? 'Tentar envio novamente' : 'Enviar imagem';
+  const action = !needsUpload ? 'Publicar' : upload.phase === 'ERROR' ? 'Tentar envio novamente' : 'Enviar imagem';
 
   function selectImage(event: ChangeEvent<HTMLInputElement>) {
     const selected = event.currentTarget.files?.[0];
@@ -85,20 +89,40 @@ export function PostComposer({ onPublished }: { onPublished: () => void }) {
     setPublished(false);
 
     try {
-      if (file) {
+      if (file && needsUpload) {
         await upload.uploadImage(file);
         return;
       }
       setPublishing(true);
-      await createPost(content);
+      const post = await createPost(content, mediaId);
       setContent('');
-      setPublished(true);
-      onPublished();
+      removeImage();
+      if (mediaId) {
+        setImagePost(post);
+        setStatusError(null);
+      } else {
+        setPublished(true);
+        onPublished();
+      }
     } catch (failure) {
       setPostError(errorMessage(failure));
     } finally {
       setPublishing(false);
       submission.current = false;
+    }
+  }
+
+  async function refreshStatus() {
+    if (!imagePost || checkingStatus) return;
+    setCheckingStatus(true);
+    setStatusError(null);
+    try {
+      const latest = await getPost(imagePost.id);
+      setImagePost((current) => current?.id === latest.id ? latest : current);
+    } catch (failure) {
+      setStatusError({ postId: imagePost.id, message: errorMessage(failure) });
+    } finally {
+      setCheckingStatus(false);
     }
   }
 
@@ -150,20 +174,20 @@ export function PostComposer({ onPublished }: { onPublished: () => void }) {
             {content.length.toLocaleString('pt-BR')} / {POST_MAX_LENGTH.toLocaleString('pt-BR')}
           </span>
           <button type="submit" className="primary-button" disabled={busy || !canSubmit}>
-            {alreadyUploaded ? 'Imagem enviada' : action}
+            {action}
           </button>
         </div>
 
-        {file && !alreadyUploaded && (
+        {needsUpload && (
           <p className="message message-muted">O texto fica no rascunho enquanto você envia a imagem.</p>
         )}
         <div role="status" aria-live="polite">
           {progress && <p className="message message-muted">{progress}</p>}
           {published && <p className="message message-success">Publicação enviada ao feed.</p>}
           {upload.media && (
-            <p className={alreadyUploaded ? 'message message-success' : 'message message-muted'}>
+            <p className={mediaId ? 'message message-success' : 'message message-muted'}>
               Status da mídia <strong>{upload.media.status}</strong>.
-              {alreadyUploaded && ' A imagem foi enviada e aguarda a integração com a publicação e a moderação.'}
+              {mediaId && ' Envio confirmado.'}
             </p>
           )}
         </div>
@@ -171,6 +195,21 @@ export function PostComposer({ onPublished }: { onPublished: () => void }) {
         {postError && <p role="alert" className="message message-error">{postError}</p>}
         {upload.error && <p role="alert" className="message message-error">{upload.error}</p>}
       </form>
+      {imagePost && (
+        <div>
+          <div role="status" aria-live="polite">
+            <p className="message message-success">
+              {imagePost.status === 'PENDING_MODERATION' && 'Publicação criada e aguardando moderação. '}
+              Status da publicação <strong>{imagePost.status}</strong>.
+            </p>
+          </div>
+          <button type="button" className="text-button" onClick={refreshStatus} disabled={checkingStatus}>
+            {checkingStatus ? 'Consultando status…' : 'Atualizar status'}
+          </button>
+          <a href={postStatusUrl(imagePost.id)} target="_blank" rel="noreferrer">Link do status</a>
+          {statusError?.postId === imagePost.id && <p role="alert" className="message message-error">{statusError.message}</p>}
+        </div>
+      )}
     </section>
   );
 }

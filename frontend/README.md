@@ -27,4 +27,4 @@ npm test
 npm run build
 ```
 
-Os testes simulam as respostas HTTP das APIs e do S3. A integração real do envio depende de AWS configurada no media-service e do CORS no bucket. Após a confirmação, `UPLOADED` indica o recebimento da mídia. A associação do anexo ao post e sua moderação dependem da integração futura dos serviços.
+Os testes simulam as respostas HTTP das APIs e do S3. A integração real do envio depende de AWS configurada no media-service e do CORS no bucket. Após a confirmação, `UPLOADED` indica o recebimento da mídia. Clique em **Publicar** após a confirmação para criar o post com status `PENDING_MODERATION`. O botão **Atualizar status** consulta a API uma vez por clique. O **Link do status** permite reabrir a consulta mais tarde. Posts pendentes ficam fora do feed e permanecem pendentes durante este laboratório.

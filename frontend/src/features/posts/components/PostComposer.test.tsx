@@ -11,6 +11,9 @@ const media = {
   id: 'media-id', fileName: 'foto.png', contentType: 'image/png', size: 3,
   status: 'UPLOADED', createdAt, updatedAt: createdAt,
 };
+const pendingPost = {
+  id: 'post-with-image', content: 'Rascunho com imagem', mediaId: media.id, status: 'PENDING_MODERATION', createdAt,
+};
 
 const fetchMock = vi.fn<typeof fetch>();
 const createObjectURL = vi.fn(() => 'blob:preview');
@@ -145,14 +148,15 @@ describe('PostComposer', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('requests, uploads, confirms and reads an image without creating a post', async () => {
+  it('waits for upload confirmation and then creates one pending post with the media ID', async () => {
     const { text, input, onPublished } = view();
     const file = image();
     const request = deferred<Response>();
     const put = deferred<Response>();
     const confirm = deferred<Response>();
+    const created = deferred<Response>();
     fetchMock.mockReturnValueOnce(request.promise).mockReturnValueOnce(put.promise)
-      .mockReturnValueOnce(confirm.promise).mockResolvedValueOnce(Response.json(media));
+      .mockReturnValueOnce(confirm.promise).mockResolvedValueOnce(Response.json(media)).mockReturnValueOnce(created.promise);
     select(input, file);
     fireEvent.change(text, { target: { value: 'Rascunho com imagem' } });
     fireEvent.submit(text.form!);
@@ -181,11 +185,64 @@ describe('PostComposer', () => {
     confirm.resolve(Response.json(media));
     expect(await screen.findByText('UPLOADED')).toBeTruthy();
     expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/media/media-id', undefined);
-    expect(screen.getByText(/aguarda a integração com a publicação e a moderação/)).toBeTruthy();
-    expect(button('Imagem enviada').disabled).toBe(true);
+    expect(screen.getByText(/Envio confirmado/)).toBeTruthy();
+    expect(button('Publicar').disabled).toBe(false);
     expect(text.value).toBe('Rascunho com imagem');
     expect(onPublished).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    fireEvent.submit(text.form!);
+    fireEvent.submit(text.form!);
+    expect(button('Publicar').disabled).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/posts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: pendingPost.content, mediaId: media.id }),
+    });
+
+    created.resolve(Response.json(pendingPost, { status: 201 }));
+    expect(await screen.findByText('PENDING_MODERATION')).toBeTruthy();
+    expect(screen.getByText(/Publicação criada e aguardando moderação/)).toBeTruthy();
+    expect(screen.queryByText('UPLOADED')).toBeNull();
+    expect(screen.queryByRole('img')).toBeNull();
+    expect(text.value).toBe('');
+    expect(onPublished).not.toHaveBeenCalled();
+    expect(screen.getByRole('link', { name: 'Link do status' }).getAttribute('href'))
+      .toBe('/api/posts/post-with-image');
+
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+    fireEvent.click(button('Atualizar status'));
+    expect((await screen.findByRole('alert')).textContent).toContain('Não foi possível consultar o status');
+    expect(screen.getByText('PENDING_MODERATION')).toBeTruthy();
+
+    fetchMock.mockResolvedValueOnce(Response.json(pendingPost));
+    fireEvent.click(button('Atualizar status'));
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/posts/post-with-image', undefined);
+    expect(await screen.findByRole('button', { name: 'Atualizar status' })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+  });
+
+  it('keeps the confirmed upload and text when creating an image post fails', async () => {
+    const { input, text } = view();
+    select(input, image());
+    fireEvent.change(text, { target: { value: pendingPost.content } });
+    fetchMock.mockResolvedValueOnce(signature()).mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(Response.json(media)).mockResolvedValueOnce(Response.json(media))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(Response.json(pendingPost, { status: 201 }));
+    fireEvent.click(button('Enviar imagem'));
+    expect(await screen.findByText('UPLOADED')).toBeTruthy();
+    fireEvent.click(button('Publicar'));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('O serviço de mídia está indisponível');
+    expect(text.value).toBe(pendingPost.content);
+    expect(screen.getByText('UPLOADED')).toBeTruthy();
+    fireEvent.click(button('Publicar'));
+    expect(await screen.findByText('PENDING_MODERATION')).toBeTruthy();
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/media/uploads', signedUrl, '/api/media/media-id/confirm', '/api/media/media-id', '/api/posts', '/api/posts',
+    ]);
   });
 
   it('explains HTTP 503 and retains the file and text for a later retry', async () => {

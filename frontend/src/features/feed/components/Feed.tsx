@@ -26,14 +26,19 @@ export function Feed({ result, loading, error, load }: FeedProps) {
         )}
         {result && result.content.length > 0 && (
           <ul className="post-list" aria-busy={loading}>
-            {result.content.map((post) => (
-              <li key={post.id}>
-                <article className="feed-post">
-                  <time dateTime={post.createdAt}>{dateFormatter.format(new Date(post.createdAt))}</time>
-                  <p>{post.content}</p>
-                </article>
-              </li>
-            ))}
+            {result.content.map((post) => {
+              const timestamp = typeof post.createdAt === 'number'
+                ? new Date(post.createdAt * 1000).toISOString()
+                : post.createdAt;
+              return (
+                <li key={post.id}>
+                  <article className="feed-post">
+                    <time dateTime={timestamp}>{dateFormatter.format(new Date(timestamp))}</time>
+                    <p>{post.content}</p>
+                  </article>
+                </li>
+              );
+            })}
           </ul>
         )}
         {result && result.totalPages > 1 && (
