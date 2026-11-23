@@ -1,0 +1,77 @@
+name: inter-social-lab
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Configure POSTGRES_PASSWORD in .env}
+      POSTS_DB_PASSWORD: ${POSTS_DB_PASSWORD:?Configure POSTS_DB_PASSWORD in .env}
+      MEDIA_DB_PASSWORD: ${MEDIA_DB_PASSWORD:?Configure MEDIA_DB_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init-databases.sh:/docker-entrypoint-initdb.d/01-init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres && psql -U postgres -d postgres -tAc \"SELECT count(*) = 2 FROM pg_database WHERE datname IN ('posts_db', 'media_db')\" | grep -qx t"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  post-service:
+    build: ./services/post-service
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8081
+      JDBC_URL: jdbc:postgresql://postgres:5432/posts_db
+      DB_USER: posts_user
+      DB_PASSWORD: ${POSTS_DB_PASSWORD:?Configure POSTS_DB_PASSWORD in .env}
+      MEDIA_SERVICE_URL: http://media-service:8082
+      MODERATION_SQS_ENABLED: ${MODERATION_SQS_ENABLED:-false}
+      MODERATION_QUEUE_URL: ${MODERATION_QUEUE_URL:-}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_ACCESS_KEY_ID:
+      AWS_SECRET_ACCESS_KEY:
+      AWS_SESSION_TOKEN:
+      AWS_EC2_METADATA_DISABLED: "true"
+    ports:
+      - "127.0.0.1:${POST_SERVICE_PORT:-8081}:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  media-service:
+    build: ./services/media-service
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8082
+      JDBC_URL: jdbc:postgresql://postgres:5432/media_db
+      DB_USER: media_user
+      DB_PASSWORD: ${MEDIA_DB_PASSWORD:?Configure MEDIA_DB_PASSWORD in .env}
+      MEDIA_S3_BUCKET: ${MEDIA_S3_BUCKET:-}
+      MEDIA_UPLOAD_MAX_BYTES: ${MEDIA_UPLOAD_MAX_BYTES:-10485760}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_EC2_METADATA_DISABLED: "true"
+    ports:
+      - "127.0.0.1:${MEDIA_SERVICE_PORT:-8082}:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
