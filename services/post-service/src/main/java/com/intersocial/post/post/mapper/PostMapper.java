@@ -7,6 +7,6 @@ public final class PostMapper {
     private PostMapper() {}
 
     public static PostResponse toResponse(Post post) {
-        return new PostResponse(post.id(), post.content(), post.status(), post.createdAt());
+        return new PostResponse(post.id(), post.content(), post.status(), post.createdAt(), post.mediaId());
     }
 }
